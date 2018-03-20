@@ -1,0 +1,76 @@
+FROM debian:stretch as builder
+WORKDIR /build/parity
+
+ENV PATH /root/.cargo/bin:$PATH
+ENV RUST_BACKTRACE 1
+ENV RUST_TARGETS "arm-unknown-linux-gnueabihf"
+ENV LD_LIBRARY_PATH /usr/lib/arm-linux-gnueabihf/
+
+# build dependencies from debian archive
+RUN dpkg --add-architecture arm64 \
+        && apt-get -y update \
+        && apt-get install -y --force-yes --no-install-recommends \
+               curl \
+               git \
+               make \
+               g++ \
+               gcc-aarch64-linux-gnu \
+               g++-aarch64-linux-gnu \
+               libc6-dev-arm64-cross \
+               file \
+               ca-certificates \
+               binutils-aarch64-linux-gnu \
+               libssl-dev:arm64 \
+               libudev-dev:arm64 \
+               libstdc++6:arm64 \
+               libc6:arm64 \
+               python-dev \
+               apt-transport-https \
+               gnupg \
+        && apt-get clean
+
+RUN curl -sL https://deb.nodesource.com/setup_9.x | bash -
+RUN echo "Package: * \
+	  Pin: origin deb.nodesource.com \
+	  Pin-Priority: 1002" > /etc/apt/preferences.d/nodejs
+
+RUN apt-get -y install nodejs
+
+# rust and cargo as dependency
+RUN  curl https://sh.rustup.rs -sSf | sh -s -- -y \
+	&& rustc -vV \
+        && cargo -V \
+        && rustup target add aarch64-unknown-linux-gnu
+
+# pull dependencies and setup target
+ADD . /build/parity/
+RUN mkdir -p .cargo \
+        && echo '[target.aarch64-unknown-linux-gnu]\n\
+           linker = "aarch64-linux-gnu-gcc"\n'\
+        >>.cargo/config \
+        && cat .cargo/config
+
+#RUN OPENSSL_DIR=/usr OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu/ \
+#           cargo update
+
+# build parity
+RUN OPENSSL_DIR=/usr OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu/ \
+           cargo build --target aarch64-unknown-linux-gnu --release --verbose \
+        && ls /build/parity/target/aarch64-unknown-linux-gnu/release/parity
+
+ADD . /build/parity
+# strip parity
+RUN /usr/bin/aarch64-linux-gnu-strip /build/parity/target/aarch64-unknown-linux-gnu/release/parity \
+        && cp -a /build/parity/target/aarch64-unknown-linux-gnu/release/parity /parity \
+        && file /parity
+               
+FROM arm64v8/debian:stretch
+
+COPY --from=builder /parity /parity
+
+COPY --from=builder /usr/lib/aarch64-linux-gnu/libssl.so.* \
+	/usr/lib/aarch64-linux-gnu/libcrypto.so.* \
+	/usr/lib/aarch64-linux-gnu/
+
+EXPOSE 8080 8545 8180
+ENTRYPOINT ["/parity"]
